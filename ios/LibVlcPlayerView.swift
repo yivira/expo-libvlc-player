@@ -486,15 +486,58 @@ class LibVlcPlayerView: ExpoView {
 
     func snapshot(_ path: String) {
         let video = getVideoSize()
-
         if hasVideoSize {
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "yyyy-MM-dd-HH'h'mm'm'ss's'"
             let snapshotPath = path + "/vlc-snapshot-\(dateFormatter.string(from: Date())).jpg"
 
-            mediaPlayer?.saveVideoSnapshot(at: snapshotPath, withWidth: Int32(video.width), andHeight: Int32(video.height))
+            let width = max(Int32(video.width), 1)
+            let height = max(Int32(video.height), 1)
+            let attempts: [(Int32, Int32)] = [(width, height), (0, 0)]
+            let checksPerAttempt = 4
+            let checkIntervalMs = 180
 
-            onSnapshotTaken(["path": snapshotPath])
+            func isSnapshotReady() -> Bool {
+                guard FileManager.default.fileExists(atPath: snapshotPath),
+                      let attributes = try? FileManager.default.attributesOfItem(atPath: snapshotPath),
+                      let size = attributes[.size] as? NSNumber else { return false }
+                return size.intValue > 0
+            }
+
+            func pollSnapshot(at index: Int, remainingChecks: Int) {
+                if isSnapshotReady() {
+                    DispatchQueue.main.async {
+                        self.onSnapshotTaken(["path": snapshotPath])
+                    }
+                    return
+                }
+
+                if remainingChecks > 0 {
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                        deadline: .now() + .milliseconds(checkIntervalMs)
+                    ) {
+                        pollSnapshot(at: index, remainingChecks: remainingChecks - 1)
+                    }
+                    return
+                }
+
+                trySnapshot(at: index + 1)
+            }
+
+            func trySnapshot(at index: Int) {
+                guard index < attempts.count else {
+                    DispatchQueue.main.async {
+                        self.onEncounteredError(["error": "Snapshot could not be taken"])
+                    }
+                    return
+                }
+
+                let attempt = attempts[index]
+                mediaPlayer?.saveVideoSnapshot(at: snapshotPath, withWidth: attempt.0, andHeight: attempt.1)
+                pollSnapshot(at: index, remainingChecks: checksPerAttempt)
+            }
+
+            trySnapshot(at: 0)
         } else {
             onEncounteredError(["error": "Snapshot could not be taken"])
             return
